@@ -1,8 +1,10 @@
+name: work
+
 services:
 
   vpn:
     image: ghcr.io/leleobhz/snx-rs-docker:latest
-    container_name: meo-vpn
+    container_name: work-vpn
     command: ["sleep", "infinity"]
     stdin_open: true
     tty: true
@@ -21,11 +23,12 @@ services:
       - 127.0.0.1:8008:8008       # macos web viewer
       - 127.0.0.1:5901:5901/tcp   # macos VNC
       - 127.0.0.1:5901:5901/udp
+      - 127.0.0.1:2222:22/tcp     # linux SSH
     restart: unless-stopped
 
   windows:
     image: dockurr/windows
-    container_name: meo-windows
+    container_name: work-windows
     network_mode: "service:vpn"
     depends_on:
       - vpn
@@ -53,7 +56,7 @@ services:
 
   macos:
     image: dockurr/macos
-    container_name: meo-macos
+    container_name: work-macos
     network_mode: "service:vpn"
     depends_on:
       - vpn
@@ -80,3 +83,20 @@ services:
       - ./shared:/shared
     restart: unless-stopped
     stop_grace_period: 2m
+
+  linux:
+    build:
+      context: .
+      dockerfile: linux-image/Dockerfile
+    image: work-linux:latest
+    container_name: work-linux
+    network_mode: "service:vpn"
+    depends_on:
+      - vpn
+    environment:
+      USERNAME: "${USERNAME}"
+      PASSWORD: "${PASSWORD}"
+    volumes:
+      - ./linux:/home/${USERNAME}
+      - ./shared:/shared
+    restart: unless-stopped

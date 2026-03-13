@@ -3,6 +3,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPOSE="docker compose -f $SCRIPT_DIR/docker-compose.yml"
+CORPORATE_DNS="10.17.193.169"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -34,12 +35,12 @@ container_running() {
 
 # Check if VPN tunnel is up
 vpn_connected() {
-  docker exec meo-vpn ip link show snx-tun &>/dev/null 2>&1
+  docker exec work-vpn ip link show snx-tun &>/dev/null 2>&1
 }
 
-# Set up NAT + DNS forwarding inside meo-vpn
+# Set up NAT + DNS forwarding inside work-vpn
 setup_nat() {
-  docker exec meo-vpn sh -c "\
+  docker exec work-vpn sh -c "\
     # --- Corporate traffic via VPN tunnel ---
     iptables -t nat -C POSTROUTING -o snx-tun -j MASQUERADE 2>/dev/null || \
     iptables -t nat -A POSTROUTING -o snx-tun -j MASQUERADE; \
@@ -55,10 +56,28 @@ setup_nat() {
     iptables -C FORWARD -i eth0 -o docker -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
     iptables -A FORWARD -i eth0 -o docker -m state --state RELATED,ESTABLISHED -j ACCEPT; \
     # --- DNS to corporate DNS ---
-    iptables -t nat -C PREROUTING -i docker -p udp --dport 53 -j DNAT --to-destination 10.17.193.169:53 2>/dev/null || \
-    iptables -t nat -A PREROUTING -i docker -p udp --dport 53 -j DNAT --to-destination 10.17.193.169:53; \
-    iptables -t nat -C PREROUTING -i docker -p tcp --dport 53 -j DNAT --to-destination 10.17.193.169:53 2>/dev/null || \
-    iptables -t nat -A PREROUTING -i docker -p tcp --dport 53 -j DNAT --to-destination 10.17.193.169:53" 2>/dev/null
+    iptables -t nat -C PREROUTING -i docker -p udp --dport 53 -j DNAT --to-destination ${CORPORATE_DNS}:53 2>/dev/null || \
+    iptables -t nat -A PREROUTING -i docker -p udp --dport 53 -j DNAT --to-destination ${CORPORATE_DNS}:53; \
+    iptables -t nat -C PREROUTING -i docker -p tcp --dport 53 -j DNAT --to-destination ${CORPORATE_DNS}:53 2>/dev/null || \
+    iptables -t nat -A PREROUTING -i docker -p tcp --dport 53 -j DNAT --to-destination ${CORPORATE_DNS}:53" 2>/dev/null
+}
+
+configure_linux_dns() {
+  container_running work-linux || return 0
+
+  if vpn_connected; then
+    docker exec work-linux sh -lc "cat > /etc/resolv.conf <<EOF
+nameserver ${CORPORATE_DNS}
+search .
+options edns0 trust-ad ndots:0
+EOF"
+  else
+    docker exec work-linux sh -lc "cat > /etc/resolv.conf <<'EOF'
+nameserver 127.0.0.11
+search .
+options edns0 trust-ad ndots:0
+EOF"
+  fi
 }
 
 # --- Commands ---
@@ -82,20 +101,20 @@ cmd_connect() {
   FULL_PASSWORD_B64=$(printf '%s' "${VPN_PASSWORD}${otp}" | base64 -w0)
 
   # Ensure VPN container is up
-  if ! container_running meo-vpn; then
+  if ! container_running work-vpn; then
     info "Starting VPN container..."
     $COMPOSE up -d vpn
     sleep 2
   fi
 
-  container_running meo-vpn || die "meo-vpn failed to start"
+  container_running work-vpn || die "work-vpn failed to start"
 
   [ -n "$VPN_SERVER" ] || die "VPN_SERVER not set in .env"
 
   info "Connecting VPN as $USERNAME to $VPN_SERVER..."
 
   # Run snx-rs detached inside the container
-  docker exec -d meo-vpn \
+  docker exec -d work-vpn \
     snx-rs -m standalone \
       -c /etc/snx-rs/snx-rs.conf \
       -s "$VPN_SERVER" \
@@ -108,6 +127,7 @@ cmd_connect() {
   for i in $(seq 1 $timeout); do
     if vpn_connected; then
       setup_nat
+      configure_linux_dns
       echo ""
       success "VPN connected."
       cmd_status
@@ -118,11 +138,11 @@ cmd_connect() {
 
   # If we get here, tunnel didn't come up — show logs for diagnosis
   warn "VPN tunnel did not come up within ${timeout}s."
-  echo "Check logs: ./meo.sh logs vpn"
+  echo "Check logs: ./work.sh logs vpn"
 }
 
 cmd_disconnect() {
-  if ! container_running meo-vpn; then
+  if ! container_running work-vpn; then
     warn "VPN container is not running."
     return
   fi
@@ -130,17 +150,18 @@ cmd_disconnect() {
   if ! vpn_connected; then
     warn "VPN tunnel is not up."
     # Still kill any lingering snx-rs process
-    docker exec meo-vpn killall snx-rs 2>/dev/null || true
+    docker exec work-vpn killall snx-rs 2>/dev/null || true
     return
   fi
 
   info "Disconnecting VPN..."
-  docker exec meo-vpn killall snx-rs 2>/dev/null || true
+  docker exec work-vpn killall snx-rs 2>/dev/null || true
   sleep 1
   if vpn_connected; then
     warn "Tunnel still up, forcing..."
-    docker exec meo-vpn killall -9 snx-rs 2>/dev/null || true
+    docker exec work-vpn killall -9 snx-rs 2>/dev/null || true
   fi
+  configure_linux_dns
   success "VPN disconnected."
 }
 
@@ -151,15 +172,15 @@ cmd_reconnect() {
 }
 
 cmd_status() {
-  echo -e "${BOLD}MEO Environment Status${NC}"
+  echo -e "${BOLD}Work Environment Status${NC}"
   echo ""
 
   # VPN container
-  if container_running meo-vpn; then
+  if container_running work-vpn; then
     if vpn_connected; then
       local vpn_ip vpn_dns
-      vpn_ip=$(docker exec meo-vpn ip -4 addr show snx-tun 2>/dev/null | grep -oP 'inet \K[0-9./]+' || echo "unknown")
-      vpn_dns=$(docker exec meo-vpn cat /etc/resolv.conf 2>/dev/null | grep -oP 'nameserver \K[0-9.]+' | head -1 || echo "")
+      vpn_ip=$(docker exec work-vpn ip -4 addr show snx-tun 2>/dev/null | grep -oP 'inet \K[0-9./]+' || echo "unknown")
+      vpn_dns=$(docker exec work-vpn cat /etc/resolv.conf 2>/dev/null | grep -oP 'nameserver \K[0-9.]+' | head -1 || echo "")
       echo -e "  VPN:     ${GREEN}connected${NC}"
       echo -e "           IP: $vpn_ip"
       [ -n "$vpn_dns" ] && echo -e "           DNS: $vpn_dns"
@@ -171,7 +192,7 @@ cmd_status() {
   fi
 
   # Windows
-  if container_running meo-windows; then
+  if container_running work-windows; then
     echo -e "  Windows: ${GREEN}running${NC}"
     echo -e "           Web: http://127.0.0.1:8007"
     echo -e "           RDP: 127.0.0.1:3390"
@@ -179,8 +200,16 @@ cmd_status() {
     echo -e "  Windows: ${RED}stopped${NC}"
   fi
 
+  # Linux
+  if container_running work-linux; then
+    echo -e "  Linux:   ${GREEN}running${NC}"
+    echo -e "           SSH: 127.0.0.1:2222"
+  else
+    echo -e "  Linux:   ${RED}stopped${NC}"
+  fi
+
   # macOS
-  if container_running meo-macos; then
+  if container_running work-macos; then
     echo -e "  macOS:   ${GREEN}running${NC}"
     echo -e "           Web: http://127.0.0.1:8008"
     echo -e "           VNC: 127.0.0.1:5901"
@@ -209,10 +238,11 @@ cmd_down() {
 cmd_logs() {
   local service="${1:-vpn}"
   case "$service" in
-    vpn)     docker logs -f meo-vpn ;;
-    windows) docker logs -f meo-windows ;;
-    macos)   docker logs -f meo-macos ;;
-    *)       die "Unknown service: $service. Use 'vpn', 'windows', or 'macos'." ;;
+    vpn)     docker logs -f work-vpn ;;
+    windows) docker logs -f work-windows ;;
+    macos)   docker logs -f work-macos ;;
+    linux)   docker logs -f work-linux ;;
+    *)       die "Unknown service: $service. Use 'vpn', 'windows', 'linux', or 'macos'." ;;
   esac
 }
 
@@ -223,7 +253,7 @@ vm_start() {
   load_env
 
   # Ensure VPN container is up first (VMs depend on it for networking)
-  if ! container_running meo-vpn; then
+  if ! container_running work-vpn; then
     info "Starting VPN container..."
     $COMPOSE up -d vpn
     sleep 2
@@ -250,7 +280,7 @@ enforce_single_vm() {
 
   [ -n "$other" ] || return 0
 
-  if ! container_running "meo-$other"; then
+  if ! container_running "work-$other"; then
     return 0
   fi
 
@@ -294,7 +324,7 @@ cmd_windows() {
     start)   enforce_single_vm windows; vm_start windows ;;
     stop)    vm_stop windows ;;
     restart) enforce_single_vm windows; vm_restart windows ;;
-    logs)    vm_logs meo-windows ;;
+    logs)    vm_logs work-windows ;;
     rdp)
       load_env
 
@@ -326,7 +356,7 @@ cmd_windows() {
         /sound \
         /microphone \
         /clipboard \
-        /title:"MEO Windows" \
+        /title:"Work Windows" \
         -grab-keyboard \
         $rdp_scale &
       disown
@@ -338,12 +368,12 @@ cmd_windows() {
     *)
       echo -e "${BOLD}Windows VM commands:${NC}"
       echo ""
-      echo "  ./meo.sh windows start     Start the Windows VM"
-      echo "  ./meo.sh windows stop      Graceful shutdown"
-      echo "  ./meo.sh windows restart   Stop + start"
-      echo "  ./meo.sh windows rdp       Open RDP session"
-      echo "  ./meo.sh windows web       Open web viewer in browser"
-      echo "  ./meo.sh windows logs      Tail container logs"
+      echo "  ./work.sh windows start    Start the Windows VM"
+      echo "  ./work.sh windows stop     Graceful shutdown"
+      echo "  ./work.sh windows restart  Stop + start"
+      echo "  ./work.sh windows rdp      Open RDP session"
+      echo "  ./work.sh windows web      Open web viewer in browser"
+      echo "  ./work.sh windows logs     Tail container logs"
       ;;
   esac
 }
@@ -385,55 +415,94 @@ cmd_macos() {
         vncviewer 127.0.0.1:5901 &
         disown
       else
-        warn "No VNC client found. Install tigervnc or use: ./meo.sh macos web"
+        warn "No VNC client found. Install tigervnc or use: ./work.sh macos web"
       fi
       ;;
-    logs)  vm_logs meo-macos ;;
+    logs)  vm_logs work-macos ;;
     *)
       echo -e "${BOLD}macOS VM commands:${NC}"
       echo ""
-      echo "  ./meo.sh macos start       Start the macOS VM"
-      echo "  ./meo.sh macos stop        Graceful shutdown"
-      echo "  ./meo.sh macos restart     Stop + start"
-      echo "  ./meo.sh macos web         Open web viewer in browser"
-      echo "  ./meo.sh macos vnc         Open VNC session"
-      echo "  ./meo.sh macos logs        Tail container logs"
+      echo "  ./work.sh macos start      Start the macOS VM"
+      echo "  ./work.sh macos stop       Graceful shutdown"
+      echo "  ./work.sh macos restart    Stop + start"
+      echo "  ./work.sh macos web        Open web viewer in browser"
+      echo "  ./work.sh macos vnc        Open VNC session"
+      echo "  ./work.sh macos logs       Tail container logs"
       ;;
   esac
 }
 
 cmd_linux() {
-  warn "Linux VM support is not yet implemented."
-  echo "It will be added as a new service in docker-compose.yml."
+  local action="${1:-help}"
+  case "$action" in
+    start)
+      vm_start linux
+      configure_linux_dns
+      ;;
+    stop)
+      vm_stop linux
+      ;;
+    restart)
+      vm_restart linux
+      configure_linux_dns
+      ;;
+    logs)
+      vm_logs work-linux
+      ;;
+    ssh)
+      if ! container_running work-linux; then
+        info "Linux container is not running, starting it..."
+        vm_start linux
+        configure_linux_dns
+      fi
+      load_env
+      info "Opening SSH to Linux container..."
+      ssh \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -p 2222 \
+        "$USERNAME@127.0.0.1"
+      ;;
+    *)
+      echo -e "${BOLD}Linux commands:${NC}"
+      echo ""
+      echo "  ./work.sh linux start      Start the Linux container"
+      echo "  ./work.sh linux stop       Stop the Linux container"
+      echo "  ./work.sh linux restart    Stop + start"
+      echo "  ./work.sh linux ssh        Open SSH session"
+      echo "  ./work.sh linux logs       Tail container logs"
+      ;;
+  esac
 }
 
 # --- Help ---
 
 cmd_help() {
-  echo -e "${BOLD}meo.sh${NC} — Corporate remote environment manager"
+  echo -e "${BOLD}work.sh${NC} — Corporate remote environment manager"
   echo ""
   echo -e "${BOLD}VPN:${NC}"
-  echo "  ./meo.sh connect [--debug]   Connect VPN (prompts for 2FA)"
-  echo "  ./meo.sh disconnect          Disconnect VPN"
-  echo "  ./meo.sh reconnect [--debug] Disconnect + reconnect"
+  echo "  ./work.sh connect [--debug]  Connect VPN (prompts for 2FA)"
+  echo "  ./work.sh disconnect         Disconnect VPN"
+  echo "  ./work.sh reconnect [--debug] Disconnect + reconnect"
   echo ""
   echo -e "${BOLD}Environment:${NC}"
-  echo "  ./meo.sh up                  Start all containers"
-  echo "  ./meo.sh down                Stop all containers"
-  echo "  ./meo.sh status              Show VPN + VM status"
-  echo "  ./meo.sh logs [vpn|windows|macos]  Tail container logs"
+  echo "  ./work.sh up                 Start all containers"
+  echo "  ./work.sh down               Stop all containers"
+  echo "  ./work.sh status             Show VPN + VM status"
+  echo "  ./work.sh logs [vpn|windows|linux|macos] Tail container logs"
   echo ""
   echo -e "${BOLD}VMs:${NC}"
-  echo "  ./meo.sh windows <cmd>       Manage Windows VM (start|stop|restart|rdp|web|logs)"
-  echo "  ./meo.sh macos <cmd>         Manage macOS VM (start|stop|restart|web|vnc|logs)"
-  echo -e "  ${DIM}./meo.sh linux <cmd>         (coming soon)${NC}"
+  echo "  ./work.sh windows <cmd>      Manage Windows VM (start|stop|restart|rdp|web|logs)"
+  echo "  ./work.sh linux <cmd>        Manage Linux container (start|stop|restart|ssh|logs)"
+  echo "  ./work.sh macos <cmd>        Manage macOS VM (start|stop|restart|web|vnc|logs)"
   echo ""
   echo -e "${BOLD}Examples:${NC}"
-  echo "  ./meo.sh connect             Connect VPN, type 2FA, done"
-  echo "  ./meo.sh windows restart     Restart Windows VM"
-  echo "  ./meo.sh windows rdp         Open RDP session"
-  echo "  ./meo.sh macos web           Open macOS web viewer"
-  echo "  ./meo.sh status              Quick overview of everything"
+  echo "  ./work.sh connect            Connect VPN, type 2FA, done"
+  echo "  ./work.sh windows restart    Restart Windows VM"
+  echo "  ./work.sh windows rdp        Open RDP session"
+  echo "  ./work.sh linux ssh          Open SSH session to Arch"
+  echo "  ./work.sh macos web          Open macOS web viewer"
+  echo "  ./work.sh status             Quick overview of everything"
 }
 
 # --- Main dispatcher ---
@@ -450,5 +519,5 @@ case "${1:-help}" in
   macos)      shift; cmd_macos "$@" ;;
   linux)      shift; cmd_linux "$@" ;;
   help|--help|-h) cmd_help ;;
-  *)          die "Unknown command: $1. Run './meo.sh help' for usage." ;;
+  *)          die "Unknown command: $1. Run './work.sh help' for usage." ;;
 esac

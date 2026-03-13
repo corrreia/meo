@@ -1,6 +1,6 @@
-# meo
+# work
 
-Corporate remote work environment running a Check Point SSL VPN, a Windows 11 VM, and a macOS VM in Docker. The Windows VM shares the VPN container's network namespace so its traffic goes through the corporate VPN tunnel. The macOS VM runs with its own networking (no VPN).
+Corporate remote work environment running a Check Point SSL VPN, a Windows 11 VM, a macOS VM, and a simple Arch Linux container in Docker. The Windows VM and Linux container share the VPN container's network namespace so their traffic goes through the corporate VPN tunnel. The macOS VM runs with its own networking (no VPN).
 
 Split-tunnel: only RFC 1918 private subnets route through the VPN. Internet traffic goes direct through your home connection.
 
@@ -8,20 +8,20 @@ Split-tunnel: only RFC 1918 private subnets route through the VPN. Internet traf
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  meo-vpn container (snx-rs)                     │
+│  work-vpn container (snx-rs)                    │
 │                                                 │
 │  eth0 ──────── home internet                    │
 │  snx-tun ───── corporate VPN (SSL)              │
 │  docker ────── internal bridge (172.30.0.0/24)  │
 │                     │                           │
 │              ┌──────┴──────┐                    │
-│              │ meo-windows │                    │
+│              │ work-windows│                    │
 │              │ (Win 11 VM) │                    │
 │              └─────────────┘                    │
 └─────────────────────────────────────────────────┘
 
 │              ┌──────┴──────┐                    │
-│              │  meo-macos  │                    │
+│              │ work-macos  │                    │
 │              │ (macOS 15)  │                    │
 │              └─────────────┘                    │
 
@@ -43,58 +43,71 @@ You need: `USERNAME`, `PASSWORD` (Windows VM login), `VPN_SERVER` (gateway IP), 
 2. Start everything:
 
 ```bash
-./meo.sh up
+./work.sh up
 ```
 
 3. Connect VPN (prompts for 2FA code):
 
 ```bash
-./meo.sh connect
+./work.sh connect
 ```
 
 4. Open Windows VM:
 
 ```bash
-./meo.sh windows rdp    # RDP (full experience)
-./meo.sh windows web    # browser viewer (quick access)
+./work.sh windows rdp    # RDP (full experience)
+./work.sh windows web    # browser viewer (quick access)
 ```
 
 5. Open macOS VM:
 
 ```bash
-./meo.sh macos web      # browser viewer (http://127.0.0.1:8008)
-./meo.sh macos vnc      # VNC session
+./work.sh macos web      # browser viewer (http://127.0.0.1:8008)
+./work.sh macos vnc      # VNC session
+```
+
+6. Open Linux shell:
+
+```bash
+./work.sh linux ssh
 ```
 
 ## Commands
 
 ```
 VPN:
-  ./meo.sh connect [--debug]   Connect VPN (prompts for 2FA)
-  ./meo.sh disconnect          Disconnect VPN
-  ./meo.sh reconnect [--debug] Disconnect + reconnect
+  ./work.sh connect [--debug]   Connect VPN (prompts for 2FA)
+  ./work.sh disconnect          Disconnect VPN
+  ./work.sh reconnect [--debug] Disconnect + reconnect
 
 Environment:
-  ./meo.sh up                  Start all containers
-  ./meo.sh down                Stop all containers
-  ./meo.sh status              Show VPN + VM status
-  ./meo.sh logs [vpn|windows|macos]  Tail container logs
+  ./work.sh up                  Start all containers
+  ./work.sh down                Stop all containers
+  ./work.sh status              Show VPN + VM status
+  ./work.sh logs [vpn|windows|linux|macos]  Tail container logs
 
 Windows VM:
-  ./meo.sh windows start       Start the VM
-  ./meo.sh windows stop        Graceful shutdown
-  ./meo.sh windows restart     Stop + start
-  ./meo.sh windows rdp         Open RDP session (xfreerdp3)
-  ./meo.sh windows web         Open web viewer in browser
-  ./meo.sh windows logs        Tail container logs
+  ./work.sh windows start       Start the VM
+  ./work.sh windows stop        Graceful shutdown
+  ./work.sh windows restart     Stop + start
+  ./work.sh windows rdp         Open RDP session (xfreerdp3)
+  ./work.sh windows web         Open web viewer in browser
+  ./work.sh windows logs        Tail container logs
+
+Linux:
+  ./work.sh linux start         Start the Arch container
+  ./work.sh linux stop          Stop the Arch container
+  ./work.sh linux restart       Stop + start
+  ./work.sh linux ssh           Open SSH session
+  ./work.sh linux logs          Tail container logs
 
 macOS VM:
-  ./meo.sh macos start         Start the VM
-  ./meo.sh macos stop          Graceful shutdown
-  ./meo.sh macos restart       Stop + start
-  ./meo.sh macos web           Open web viewer in browser
-  ./meo.sh macos vnc           Open VNC session
-  ./meo.sh macos logs          Tail container logs
+  ./work.sh macos start         Start the VM
+  ./work.sh macos stop          Graceful shutdown
+  ./work.sh macos restart       Stop + start
+  ./work.sh macos web           Open web viewer in browser
+  ./work.sh macos vnc           Open VNC session
+  ./work.sh macos logs          Tail container logs
 ```
 
 ## How it works
@@ -102,10 +115,11 @@ macOS VM:
 - **VPN**: [snx-rs](https://github.com/ancwrd1/snx-rs) runs inside a Docker container in SSL tunnel mode. IPSec doesn't work with this server due to SCV/compliance checks.
 - **Windows VM**: [dockurr/windows](https://github.com/dockur/windows) runs a Windows 11 QEMU VM sharing the VPN container's network namespace.
 - **macOS VM**: [dockurr/macos](https://github.com/dockur/macos) runs a macOS 15 (Sequoia) QEMU VM sharing the VPN container's network namespace. Web viewer on port 8008, VNC on port 5901. Uses different ports from Windows (8006/5900) to avoid conflicts.
+- **Linux**: a small Arch Linux container exposes SSH on port 2222, shares the VPN container's network namespace, and switches its resolver to corporate DNS when the VPN is connected.
 - **Split tunnel**: Server pushes full-tunnel routes, but `no-routing = true` ignores them. Only private subnets are routed through the VPN via `add-routes`. Internet goes direct.
-- **NAT**: iptables masquerade on both `snx-tun` (corporate) and `eth0` (internet). DNS is DNAT'd to corporate DNS for both internal and external resolution.
+- **NAT**: iptables masquerade on both `snx-tun` (corporate) and `eth0` (internet). Linux DNS is pointed directly at corporate DNS while the VPN is up, so internal lookups behave consistently.
 - **RDP**: `xfreerdp3` with dynamic resolution, AVC444 graphics, clipboard, sound/mic, and Hyprland scale detection.
-- **Shared folder**: `./shared/` is mounted into both VMs, so it acts as a common exchange folder between Windows and macOS. Files written there from one VM are visible in the other.
+- **Shared folder**: `./shared/` is mounted into Windows, macOS, and Linux, so it acts as a common exchange folder across all guests.
 
 ## Guest shared folder access
 
@@ -118,6 +132,8 @@ sudo -S mount_9p shared
 ```
 
 After mounting it, open Finder and go to `Go -> Computer` to access the `shared` volume.
+
+Linux sees the same files directly at `/shared` and also through `~/Shared`.
 
 ## Post-install (one-time, inside Windows)
 
