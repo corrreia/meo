@@ -84,7 +84,21 @@ Windows VM:
 - **Split tunnel**: Server pushes full-tunnel routes, but `no-routing = true` ignores them. Only private subnets are routed through the VPN via `add-routes`. Internet goes direct.
 - **NAT**: iptables masquerade on both `snx-tun` (corporate) and `eth0` (internet). DNS is DNAT'd to corporate DNS for both internal and external resolution.
 - **RDP**: `xfreerdp3` with dynamic resolution, AVC444 graphics, clipboard, sound/mic, and Hyprland scale detection.
-- **Shared folder**: `./shared/` mounts as `Shared` on the Windows desktop.
+- **Shared folder**: `./shared/` is exposed via Samba inside the VM at `\\172.30.0.1\Data`.
+
+## Post-install (one-time, inside Windows)
+
+The shared folder desktop shortcut uses `host.lan` which corporate DNS can't resolve. Fix it by adding a hosts entry in an elevated PowerShell:
+
+```powershell
+Add-Content C:\Windows\System32\drivers\etc\hosts "172.30.0.1 host.lan"
+```
+
+The `Shared` shortcut on the desktop will then work. Alternatively, map it as a network drive:
+
+```powershell
+net use Z: \\172.30.0.1\Data /persistent:yes
+```
 
 ## Requirements
 
