@@ -179,6 +179,15 @@ cmd_status() {
     echo -e "  Windows: ${RED}stopped${NC}"
   fi
 
+  # macOS
+  if container_running meo-macos; then
+    echo -e "  macOS:   ${GREEN}running${NC}"
+    echo -e "           Web: http://127.0.0.1:8008"
+    echo -e "           VNC: 127.0.0.1:5901"
+  else
+    echo -e "  macOS:   ${RED}stopped${NC}"
+  fi
+
   echo ""
 }
 
@@ -202,7 +211,8 @@ cmd_logs() {
   case "$service" in
     vpn)     docker logs -f meo-vpn ;;
     windows) docker logs -f meo-windows ;;
-    *)       die "Unknown service: $service. Use 'vpn' or 'windows'." ;;
+    macos)   docker logs -f meo-macos ;;
+    *)       die "Unknown service: $service. Use 'vpn', 'windows', or 'macos'." ;;
   esac
 }
 
@@ -222,6 +232,41 @@ vm_start() {
   info "Starting $vm..."
   $COMPOSE up -d "$vm"
   success "$vm started."
+}
+
+other_vm() {
+  local vm="$1"
+  case "$vm" in
+    windows) echo "macos" ;;
+    macos) echo "windows" ;;
+    *) echo "" ;;
+  esac
+}
+
+enforce_single_vm() {
+  local vm="$1"
+  local other
+  other=$(other_vm "$vm")
+
+  [ -n "$other" ] || return 0
+
+  if ! container_running "meo-$other"; then
+    return 0
+  fi
+
+  warn "${other} is currently running. Only one OS can run at a time."
+  read -r -p "Stop ${other} and continue with ${vm}? [Y/n] " reply
+  reply=${reply:-Y}
+
+  case "$reply" in
+    y|Y|yes|YES)
+      vm_stop "$other"
+      sleep 2
+      ;;
+    *)
+      die "Aborted. Stop ${other} first or confirm the prompt."
+      ;;
+  esac
 }
 
 vm_stop() {
@@ -246,9 +291,9 @@ vm_logs() {
 cmd_windows() {
   local action="${1:-help}"
   case "$action" in
-    start)   vm_start windows ;;
+    start)   enforce_single_vm windows; vm_start windows ;;
     stop)    vm_stop windows ;;
-    restart) vm_restart windows ;;
+    restart) enforce_single_vm windows; vm_restart windows ;;
     logs)    vm_logs meo-windows ;;
     rdp)
       load_env
@@ -306,8 +351,53 @@ cmd_windows() {
 # --- Future VM stubs ---
 
 cmd_macos() {
-  warn "macOS support is not yet implemented."
-  echo "It will be added as a new service in docker-compose.yml."
+  local action="${1:-help}"
+  case "$action" in
+    start)
+      enforce_single_vm macos
+      info "Starting macOS VM..."
+      $COMPOSE up -d macos
+      success "macOS started."
+      ;;
+    stop)
+      info "Stopping macOS VM gracefully..."
+      $COMPOSE stop macos
+      success "macOS stopped."
+      ;;
+    restart)
+      enforce_single_vm macos
+      info "Stopping macOS VM gracefully..."
+      $COMPOSE stop macos
+      sleep 2
+      info "Starting macOS VM..."
+      $COMPOSE up -d macos
+      success "macOS restarted."
+      ;;
+    web)
+      info "Opening macOS web viewer..."
+      xdg-open "http://127.0.0.1:8008" 2>/dev/null &
+      ;;
+    vnc)
+      info "Opening macOS VNC session..."
+      if command -v vncviewer &>/dev/null; then
+        vncviewer 127.0.0.1:5901 &
+        disown
+      else
+        warn "No VNC client found. Install tigervnc or use: ./meo.sh macos web"
+      fi
+      ;;
+    logs)  vm_logs meo-macos ;;
+    *)
+      echo -e "${BOLD}macOS VM commands:${NC}"
+      echo ""
+      echo "  ./meo.sh macos start       Start the macOS VM"
+      echo "  ./meo.sh macos stop        Graceful shutdown"
+      echo "  ./meo.sh macos restart     Stop + start"
+      echo "  ./meo.sh macos web         Open web viewer in browser"
+      echo "  ./meo.sh macos vnc         Open VNC session"
+      echo "  ./meo.sh macos logs        Tail container logs"
+      ;;
+  esac
 }
 
 cmd_linux() {
@@ -329,17 +419,18 @@ cmd_help() {
   echo "  ./meo.sh up                  Start all containers"
   echo "  ./meo.sh down                Stop all containers"
   echo "  ./meo.sh status              Show VPN + VM status"
-  echo "  ./meo.sh logs [vpn|windows]  Tail container logs"
+  echo "  ./meo.sh logs [vpn|windows|macos]  Tail container logs"
   echo ""
   echo -e "${BOLD}VMs:${NC}"
   echo "  ./meo.sh windows <cmd>       Manage Windows VM (start|stop|restart|rdp|web|logs)"
-  echo -e "  ${DIM}./meo.sh macos <cmd>         (coming soon)${NC}"
+  echo "  ./meo.sh macos <cmd>         Manage macOS VM (start|stop|restart|web|vnc|logs)"
   echo -e "  ${DIM}./meo.sh linux <cmd>         (coming soon)${NC}"
   echo ""
   echo -e "${BOLD}Examples:${NC}"
   echo "  ./meo.sh connect             Connect VPN, type 2FA, done"
   echo "  ./meo.sh windows restart     Restart Windows VM"
   echo "  ./meo.sh windows rdp         Open RDP session"
+  echo "  ./meo.sh macos web           Open macOS web viewer"
   echo "  ./meo.sh status              Quick overview of everything"
 }
 
