@@ -36,7 +36,7 @@ services:
       LANGUAGE: "English"
       REGION: "pt-PT"
       KEYBOARD: "pt-PT"
-      VM_NET_DEV_NAME: "docker"
+      VM_NET_DEV: "eth0"
     devices:
       - /dev/kvm
       - /dev/net/tun

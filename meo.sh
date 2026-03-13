@@ -274,7 +274,8 @@ cmd_windows() {
         /clipboard \
         /title:"MEO Windows" \
         -grab-keyboard \
-        $rdp_scale
+        $rdp_scale &
+      disown
       ;;
     web)
       info "Opening Windows web viewer..."
