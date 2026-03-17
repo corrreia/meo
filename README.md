@@ -35,6 +35,10 @@ cp .env.example .env
 
 You need: `USERNAME`, `PASSWORD` (Windows VM login), `VPN_SERVER` (gateway IP), and `VPN_PASSWORD`.
 
+If you need internal root CAs inside the Linux container, drop `.crt`, `.cer`, or `.pem` files into `./certificates/` before starting it.
+
+The same `./certificates/` directory is also prepared for Windows under the shared folder as `\\172.30.0.1\Data\certificates`.
+
 2. Start everything:
 
 ```bash
@@ -99,12 +103,19 @@ Linux:
 - **NAT**: iptables masquerade on both `snx-tun` (corporate) and `eth0` (internet). Linux DNS is pointed directly at corporate DNS while the VPN is up, so internal lookups behave consistently.
 - **RDP**: `xfreerdp3` with dynamic resolution, AVC444 graphics, clipboard, sound/mic, and Hyprland scale detection.
 - **Shared folder**: `./shared/` is mounted into Windows and Linux, so it acts as a common exchange folder across all guests.
+- **Internal certificates**: files placed in `./certificates/` are mounted into the Linux container and imported into the system trust store on startup.
 
 ## Guest shared folder access
 
 Windows exposes the shared folder over Samba at `\\172.30.0.1\Data`.
 
 Linux sees the same files directly at `/shared` and also through `~/Shared`.
+
+If you need to import internal CAs in Windows, run this in an elevated PowerShell inside the VM:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File \\172.30.0.1\Data\certificates\import-certs.ps1
+```
 
 ## Post-install (one-time, inside Windows)
 

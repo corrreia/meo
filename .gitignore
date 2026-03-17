@@ -2,3 +2,5 @@
 windows/
 macos/
 linux/
+certificates/
+shared/certificates/

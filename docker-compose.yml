@@ -66,4 +66,5 @@ services:
     volumes:
       - ./linux:/home/${USERNAME}
       - ./shared:/shared
+      - ./certificates:/usr/local/share/ca-certificates/internal:ro
     restart: no

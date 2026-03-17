@@ -41,6 +41,9 @@ vpn_connected() {
 # Set up NAT + DNS forwarding inside work-vpn
 setup_nat() {
   docker exec work-vpn sh -c "\
+    # --- Keep local SSH mapped to the Linux container ---\
+    iptables -t nat -C PREROUTING -i eth0 -p tcp --dport 22 -j ACCEPT 2>/dev/null || \
+    iptables -t nat -I PREROUTING 1 -i eth0 -p tcp --dport 22 -j ACCEPT; \
     # --- Corporate traffic via VPN tunnel ---
     iptables -t nat -C POSTROUTING -o snx-tun -j MASQUERADE 2>/dev/null || \
     iptables -t nat -A POSTROUTING -o snx-tun -j MASQUERADE; \
@@ -83,6 +86,42 @@ search .
 options edns0 trust-ad ndots:0
 EOF"
   fi
+}
+
+prepare_windows_certs() {
+  local src_dir="$SCRIPT_DIR/certificates"
+  local dst_dir="$SCRIPT_DIR/shared/certificates"
+  local cert_count=0
+  local file
+
+  mkdir -p "$src_dir" "$dst_dir"
+
+  rm -f "$dst_dir"/*.crt "$dst_dir"/*.cer "$dst_dir"/*.pem
+
+  shopt -s nullglob
+  for file in "$src_dir"/*.crt "$src_dir"/*.cer "$src_dir"/*.pem; do
+    [ -f "$file" ] || continue
+    cp -f "$file" "$dst_dir/"
+    cert_count=$((cert_count + 1))
+  done
+  shopt -u nullglob
+
+  cat > "$dst_dir/import-certs.ps1" <<'EOF'
+$certDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$certFiles = Get-ChildItem -Path $certDir -File | Where-Object { $_.Extension -in '.crt', '.cer', '.pem' }
+
+if (-not $certFiles) {
+  Write-Host 'No certificate files found.'
+  exit 0
+}
+
+foreach ($certFile in $certFiles) {
+  Import-Certificate -FilePath $certFile.FullName -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+  Write-Host "Imported $($certFile.Name)"
+}
+EOF
+
+  printf '%s\n' "$cert_count"
 }
 
 # --- Commands ---
@@ -223,7 +262,9 @@ cmd_status() {
 cmd_up() {
   load_env
   info "Starting all containers..."
-  $COMPOSE up -d
+  $COMPOSE up -d --build
+  setup_nat
+  configure_linux_dns
   success "All containers started."
   echo ""
   cmd_status
@@ -258,8 +299,14 @@ vm_start() {
     sleep 2
   fi
 
+  setup_nat
+
   info "Starting $vm..."
-  $COMPOSE up -d "$vm"
+  if [ "$vm" = "linux" ]; then
+    $COMPOSE up -d --build "$vm"
+  else
+    $COMPOSE up -d "$vm"
+  fi
   success "$vm started."
 }
 
@@ -287,15 +334,23 @@ vm_logs() {
 cmd_windows() {
   local action="${1:-help}"
   case "$action" in
-    start)   vm_start windows ;;
+    start)
+      prepare_windows_certs >/dev/null
+      vm_start windows
+      ;;
     stop)    vm_stop windows ;;
-    restart) vm_restart windows ;;
+    restart)
+      prepare_windows_certs >/dev/null
+      vm_restart windows
+      ;;
     logs)    vm_logs work-windows ;;
     rdp)
       load_env
+      prepare_windows_certs >/dev/null
 
       # Detect Hyprland display scale
       local rdp_scale=""
+      local rdp_log="/tmp/work-windows-rdp.log"
       if command -v hyprctl &>/dev/null; then
         local hypr_scale
         hypr_scale=$(hyprctl monitors -j 2>/dev/null | jq -r '.[] | select(.focused == true) | .scale' 2>/dev/null)
@@ -311,7 +366,7 @@ cmd_windows() {
       fi
 
       info "Opening RDP to Windows VM..."
-      xfreerdp3 \
+      nohup xfreerdp3 \
         /v:127.0.0.1:3390 \
         /u:"$USERNAME" \
         /p:"$PASSWORD" \
@@ -324,8 +379,18 @@ cmd_windows() {
         /clipboard \
         /title:"Work Windows" \
         -grab-keyboard \
-        $rdp_scale &
+        $rdp_scale \
+        >"$rdp_log" 2>&1 </dev/null &
       disown
+      success "RDP launched. Logs: $rdp_log"
+      ;;
+    certs)
+      local cert_count
+      cert_count=$(prepare_windows_certs)
+      info "Prepared ${cert_count} certificate(s) for Windows in \\\\172.30.0.1\\Data\\certificates"
+      echo ""
+      echo "Run this in an elevated PowerShell inside Windows:"
+      echo "  PowerShell -ExecutionPolicy Bypass -File \\\\172.30.0.1\\Data\\certificates\\import-certs.ps1"
       ;;
     web)
       info "Opening Windows web viewer..."
@@ -338,6 +403,7 @@ cmd_windows() {
       echo "  ./work.sh windows stop     Graceful shutdown"
       echo "  ./work.sh windows restart  Stop + start"
       echo "  ./work.sh windows rdp      Open RDP session"
+      echo "  ./work.sh windows certs    Prepare internal certs for Windows"
       echo "  ./work.sh windows web      Open web viewer in browser"
       echo "  ./work.sh windows logs     Tail container logs"
       ;;
@@ -370,6 +436,7 @@ cmd_linux() {
         configure_linux_dns
       fi
       load_env
+      setup_nat
       info "Opening SSH to Linux container..."
       ssh \
         -o StrictHostKeyChecking=no \

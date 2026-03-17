@@ -20,6 +20,13 @@ chmod 0440 "/etc/sudoers.d/${username}"
 
 mkdir -p /run/sshd
 
+if [ -d /usr/local/share/ca-certificates/internal ]; then
+  find /usr/local/share/ca-certificates/internal -type f \( -name '*.crt' -o -name '*.cer' -o -name '*.pem' \) | grep -q . && update_certs=1 || update_certs=0
+  if [ "$update_certs" = "1" ]; then
+    trust extract-compat
+  fi
+fi
+
 cat > /etc/ssh/sshd_config.d/work.conf <<EOF
 PasswordAuthentication yes
 PermitRootLogin no
