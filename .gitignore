@@ -3,4 +3,5 @@ windows/
 macos/
 linux/
 certificates/
-shared/certificates/
+shared/*
+!shared/.gitkeep

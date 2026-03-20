@@ -90,7 +90,7 @@ Linux:
   ./work.sh linux start         Start the Arch container
   ./work.sh linux stop          Stop the Arch container
   ./work.sh linux restart       Stop + start
-  ./work.sh linux ssh           Open SSH session
+  ./work.sh linux ssh           Open interactive shell
   ./work.sh linux logs          Tail container logs
 ```
 
@@ -98,7 +98,7 @@ Linux:
 
 - **VPN**: [snx-rs](https://github.com/ancwrd1/snx-rs) runs inside a Docker container in SSL tunnel mode. IPSec doesn't work with this server due to SCV/compliance checks.
 - **Windows VM**: [dockurr/windows](https://github.com/dockur/windows) runs a Windows 11 QEMU VM sharing the VPN container's network namespace.
-- **Linux**: a small Arch Linux container exposes SSH on port 2222, shares the VPN container's network namespace, and switches its resolver to corporate DNS when the VPN is connected.
+- **Linux**: a small Arch Linux container shares the VPN container's network namespace, opens a shell through `docker exec`, and switches its resolver to corporate DNS when the VPN is connected.
 - **Split tunnel**: Server pushes full-tunnel routes, but `no-routing = true` ignores them. Only private subnets are routed through the VPN via `add-routes`. Internet goes direct.
 - **NAT**: iptables masquerade on both `snx-tun` (corporate) and `eth0` (internet). Linux DNS is pointed directly at corporate DNS while the VPN is up, so internal lookups behave consistently.
 - **RDP**: `xfreerdp3` with dynamic resolution, AVC444 graphics, clipboard, sound/mic, and Hyprland scale detection.

@@ -41,9 +41,6 @@ vpn_connected() {
 # Set up NAT + DNS forwarding inside work-vpn
 setup_nat() {
   docker exec work-vpn sh -c "\
-    # --- Keep local SSH mapped to the Linux container ---\
-    iptables -t nat -C PREROUTING -i eth0 -p tcp --dport 22 -j ACCEPT 2>/dev/null || \
-    iptables -t nat -I PREROUTING 1 -i eth0 -p tcp --dport 22 -j ACCEPT; \
     # --- Corporate traffic via VPN tunnel ---
     iptables -t nat -C POSTROUTING -o snx-tun -j MASQUERADE 2>/dev/null || \
     iptables -t nat -A POSTROUTING -o snx-tun -j MASQUERADE; \
@@ -251,7 +248,7 @@ cmd_status() {
   # Linux
   if container_running work-linux; then
     echo -e "  Linux:   ${GREEN}running${NC}"
-    echo -e "           SSH: 127.0.0.1:2222"
+    echo -e "           Shell: ./work.sh linux ssh"
   else
     echo -e "  Linux:   ${RED}stopped${NC}"
   fi
@@ -263,7 +260,6 @@ cmd_up() {
   load_env
   info "Starting all containers..."
   $COMPOSE up -d --build
-  setup_nat
   configure_linux_dns
   success "All containers started."
   echo ""
@@ -298,8 +294,6 @@ vm_start() {
     $COMPOSE up -d vpn
     sleep 2
   fi
-
-  setup_nat
 
   info "Starting $vm..."
   if [ "$vm" = "linux" ]; then
@@ -436,13 +430,8 @@ cmd_linux() {
         configure_linux_dns
       fi
       load_env
-      setup_nat
-      info "Opening SSH to Linux container..."
-      ssh \
-        -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null \
-        -p 2222 \
-        "$USERNAME@127.0.0.1"
+      info "Opening shell in Linux container..."
+      exec docker exec -it -u "$USERNAME" work-linux bash -l
       ;;
     *)
       echo -e "${BOLD}Linux commands:${NC}"
@@ -450,7 +439,7 @@ cmd_linux() {
       echo "  ./work.sh linux start      Start the Linux container"
       echo "  ./work.sh linux stop       Stop the Linux container"
       echo "  ./work.sh linux restart    Stop + start"
-      echo "  ./work.sh linux ssh        Open SSH session"
+      echo "  ./work.sh linux ssh        Open interactive shell"
       echo "  ./work.sh linux logs       Tail container logs"
       ;;
   esac
@@ -480,7 +469,7 @@ cmd_help() {
   echo "  ./work.sh connect            Connect VPN, type 2FA, done"
   echo "  ./work.sh windows restart    Restart Windows VM"
   echo "  ./work.sh windows rdp        Open RDP session"
-  echo "  ./work.sh linux ssh          Open SSH session to Arch"
+  echo "  ./work.sh linux ssh          Open shell in Arch container"
   echo "  ./work.sh status             Quick overview of everything"
 }
 
